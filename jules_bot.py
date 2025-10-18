@@ -52,7 +52,7 @@ class JulesAPI:
         return response.json()
     
     def create_session(self, prompt: str, source: str, starting_branch: str = "main", 
-                      automation_mode: str = "MANUAL", require_plan_approval: bool = False,
+                      automation_mode: Optional[str] = None, require_plan_approval: bool = False,
                       title: Optional[str] = None) -> Dict:
         url = f"{JULES_BASE_URL}/sessions"
         data = {
@@ -63,9 +63,10 @@ class JulesAPI:
                     "startingBranch": starting_branch
                 }
             },
-            "automationMode": automation_mode,
             "requirePlanApproval": require_plan_approval
         }
+        if automation_mode:
+            data["automationMode"] = automation_mode
         if title:
             data["title"] = title
         
@@ -166,6 +167,7 @@ Este bot permite que você controle o Jules do Google diretamente pelo Telegram.
 🔧 */test* - Testar conexão com Jules API
 📁 */sources* - Listar repositórios disponíveis
 📝 */newsession* - Criar uma nova sessão
+🎯 */newpr* - Criar sessão com PR automático
 📋 */sessions* - Listar sessões ativas
 💬 */message* - Enviar mensagem para uma sessão
 📊 */activities* - Ver atividades de uma sessão
@@ -245,7 +247,7 @@ async def new_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prompt=prompt,
             source=source,
             starting_branch="main",
-            automation_mode="MANUAL",
+            automation_mode=None,
             require_plan_approval=False,
             title=prompt[:100]
         )
@@ -267,6 +269,92 @@ async def new_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     except Exception as e:
         logger.error(f"Erro ao criar sessão: {e}")
+        error_msg = str(e)
+        
+        if "404" in error_msg or "NOT_FOUND" in error_msg:
+            await update.message.reply_text(
+                f"❌ *Repositório não encontrado!*\n\n"
+                f"O source `{source}` não existe ou não está conectado ao Jules.\n\n"
+                f"Use `/sources` para ver os repositórios disponíveis.",
+                parse_mode='Markdown'
+            )
+        elif "401" in error_msg or "403" in error_msg or "PERMISSION_DENIED" in error_msg:
+            await update.message.reply_text(
+                f"❌ *Erro de Autenticação!*\n\n"
+                f"A API Key do Jules pode estar inválida ou expirada.\n\n"
+                f"Verifique a chave em: https://jules.google.com/settings#api",
+                parse_mode='Markdown'
+            )
+        elif "400" in error_msg:
+            await update.message.reply_text(
+                f"❌ *Erro na Requisição!*\n\n"
+                f"Detalhes: {error_msg}\n\n"
+                f"*Possíveis causas:*\n"
+                f"• Repositório não está conectado ao Jules\n"
+                f"• Branch 'main' não existe (use outra branch)\n"
+                f"• Formato do source incorreto\n\n"
+                f"Use `/sources` para verificar os repositórios disponíveis.",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ *Erro ao criar sessão*\n\n"
+                f"Detalhes: {error_msg}\n\n"
+                f"Tente novamente ou use `/sources` para verificar os repositórios.",
+                parse_mode='Markdown'
+            )
+
+async def new_pr_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "⚠️ *Uso incorreto!*\n\n"
+            "*Formato:* `/newpr <source> <prompt>`\n\n"
+            "*Exemplo:*\n"
+            "`/newpr sources/github/user/repo Adicionar funcionalidade de login`\n\n"
+            "Este comando cria uma sessão que automaticamente gera um Pull Request quando completa.\n\n"
+            "Use `/sources` para ver os repositórios disponíveis.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    source = context.args[0]
+    prompt = ' '.join(context.args[1:])
+    
+    await update.message.reply_text(
+        f"🚀 Criando sessão com PR automático...\n\n*Prompt:* {prompt}\n\n"
+        f"Quando completar, o Jules criará um Pull Request automaticamente! 🎯",
+        parse_mode='Markdown'
+    )
+    
+    try:
+        result = jules_api.create_session(
+            prompt=prompt,
+            source=source,
+            starting_branch="main",
+            automation_mode="AUTO_CREATE_PR",
+            require_plan_approval=False,
+            title=prompt[:100]
+        )
+        
+        session_id = result.get('id', 'N/A')
+        session_name = result.get('name', 'N/A')
+        
+        user_id = update.effective_user.id
+        if user_id not in user_states:
+            user_states[user_id] = {}
+        user_states[user_id]['current_session'] = session_id
+        
+        message = f"✅ *Sessão criada com sucesso!*\n\n"
+        message += f"*ID:* `{session_id}`\n"
+        message += f"*Nome:* {session_name}\n"
+        message += f"*Modo:* PR Automático 🎯\n\n"
+        message += f"Use `/activities {session_id}` para acompanhar o progresso.\n"
+        message += f"Use `/status {session_id}` para ver o PR quando completar."
+        
+        await update.message.reply_text(message, parse_mode='Markdown')
+    
+    except Exception as e:
+        logger.error(f"Erro ao criar sessão com PR: {e}")
         error_msg = str(e)
         
         if "404" in error_msg or "NOT_FOUND" in error_msg:
@@ -733,6 +821,7 @@ def main():
     application.add_handler(CommandHandler("test", test_connection))
     application.add_handler(CommandHandler("sources", list_sources))
     application.add_handler(CommandHandler("newsession", new_session))
+    application.add_handler(CommandHandler("newpr", new_pr_session))
     application.add_handler(CommandHandler("sessions", list_sessions_command))
     application.add_handler(CommandHandler("message", send_message_command))
     application.add_handler(CommandHandler("activities", list_activities_command))
