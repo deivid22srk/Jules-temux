@@ -40,3 +40,4 @@ bot.log
 # Temporary files
 /tmp/
 *.tmp
+.bot_temp/
