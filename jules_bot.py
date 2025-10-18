@@ -70,7 +70,14 @@ class JulesAPI:
             data["title"] = title
         
         response = requests.post(url, headers=self.headers, json=data)
-        response.raise_for_status()
+        if response.status_code != 200:
+            error_detail = response.text
+            try:
+                error_json = response.json()
+                error_detail = json.dumps(error_json, indent=2)
+            except:
+                pass
+            raise Exception(f"API Error {response.status_code}: {error_detail}")
         return response.json()
     
     def list_sessions(self, page_size: int = 10, page_token: Optional[str] = None) -> Dict:
@@ -156,6 +163,7 @@ Este bot permite que você controle o Jules do Google diretamente pelo Telegram.
 
 *Comandos disponíveis:*
 
+🔧 */test* - Testar conexão com Jules API
 📁 */sources* - Listar repositórios disponíveis
 📝 */newsession* - Criar uma nova sessão
 📋 */sessions* - Listar sessões ativas
@@ -174,6 +182,8 @@ Quando o modo de auto-correção está ativo, você pode enviar arquivos de log 
 3. Enviar instruções de correção para o Jules
 
 */help* - Ver esta mensagem novamente
+
+💡 *Dica:* Use `/test` primeiro para verificar se está tudo configurado!
 """
     await update.message.reply_text(welcome_message, parse_mode='Markdown')
 
@@ -228,7 +238,7 @@ async def new_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     source = context.args[0]
     prompt = ' '.join(context.args[1:])
     
-    await update.message.reply_text(f"🚀 Criando sessão...\n\n*Prompt:* {prompt}")
+    await update.message.reply_text(f"🚀 Criando sessão...\n\n*Prompt:* {prompt}", parse_mode='Markdown')
     
     try:
         result = jules_api.create_session(
@@ -257,7 +267,40 @@ async def new_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     except Exception as e:
         logger.error(f"Erro ao criar sessão: {e}")
-        await update.message.reply_text(f"❌ Erro ao criar sessão: {str(e)}")
+        error_msg = str(e)
+        
+        if "404" in error_msg or "NOT_FOUND" in error_msg:
+            await update.message.reply_text(
+                f"❌ *Repositório não encontrado!*\n\n"
+                f"O source `{source}` não existe ou não está conectado ao Jules.\n\n"
+                f"Use `/sources` para ver os repositórios disponíveis.",
+                parse_mode='Markdown'
+            )
+        elif "401" in error_msg or "403" in error_msg or "PERMISSION_DENIED" in error_msg:
+            await update.message.reply_text(
+                f"❌ *Erro de Autenticação!*\n\n"
+                f"A API Key do Jules pode estar inválida ou expirada.\n\n"
+                f"Verifique a chave em: https://jules.google.com/settings#api",
+                parse_mode='Markdown'
+            )
+        elif "400" in error_msg:
+            await update.message.reply_text(
+                f"❌ *Erro na Requisição!*\n\n"
+                f"Detalhes: {error_msg}\n\n"
+                f"*Possíveis causas:*\n"
+                f"• Repositório não está conectado ao Jules\n"
+                f"• Branch 'main' não existe (use outra branch)\n"
+                f"• Formato do source incorreto\n\n"
+                f"Use `/sources` para verificar os repositórios disponíveis.",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ *Erro ao criar sessão*\n\n"
+                f"Detalhes: {error_msg}\n\n"
+                f"Tente novamente ou use `/sources` para verificar os repositórios.",
+                parse_mode='Markdown'
+            )
 
 async def list_sessions_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("📋 Buscando sessões...")
@@ -628,6 +671,52 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Erro ao processar texto: {e}")
             await update.message.reply_text(f"❌ Erro: {str(e)}")
 
+async def test_connection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🔍 Testando conexão com Jules API...")
+    
+    try:
+        result = jules_api.list_sources(page_size=1)
+        sources = result.get('sources', [])
+        
+        message = "✅ *Conexão OK!*\n\n"
+        message += f"*API Key:* Válida ✓\n"
+        message += f"*Repositórios encontrados:* {len(sources)}\n\n"
+        
+        if not sources:
+            message += "⚠️ *Aviso:* Nenhum repositório conectado!\n\n"
+            message += "Para usar o bot, você precisa:\n"
+            message += "1. Acessar https://jules.google.com\n"
+            message += "2. Conectar seus repositórios GitHub\n"
+            message += "3. Instalar o Jules GitHub App\n"
+        else:
+            message += "Tudo pronto para criar sessões! 🚀"
+        
+        await update.message.reply_text(message, parse_mode='Markdown')
+    
+    except Exception as e:
+        error_msg = str(e)
+        
+        if "401" in error_msg or "403" in error_msg:
+            await update.message.reply_text(
+                "❌ *API Key Inválida!*\n\n"
+                "A chave da API do Jules está incorreta ou expirada.\n\n"
+                "Para corrigir:\n"
+                "1. Acesse https://jules.google.com/settings#api\n"
+                "2. Gere uma nova API key\n"
+                "3. Substitua no arquivo `jules_bot.py`",
+                parse_mode='Markdown'
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ *Erro de Conexão!*\n\n"
+                f"Detalhes: {error_msg}\n\n"
+                "Verifique:\n"
+                "• Conexão com a internet\n"
+                "• API Key do Jules\n"
+                "• Status do serviço Jules",
+                parse_mode='Markdown'
+            )
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Erro: {context.error}")
     
@@ -641,6 +730,7 @@ def main():
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("test", test_connection))
     application.add_handler(CommandHandler("sources", list_sources))
     application.add_handler(CommandHandler("newsession", new_session))
     application.add_handler(CommandHandler("sessions", list_sessions_command))
