@@ -174,11 +174,17 @@ Este bot permite que você controle o Jules do Google diretamente pelo Telegram.
 ✅ */approve* - Aprovar plano de uma sessão
 🔍 */status* - Ver status de uma sessão
 
-🤖 *Modo Auto-Correção:*
+🤖 *Análise de Logs:*
 */autocorrect on* - Ativar modo de auto-correção
 */autocorrect off* - Desativar modo de auto-correção
+*/analyze* - Analisar log (responda a mensagem com log)
 
-Quando o modo de auto-correção está ativo, você pode enviar arquivos de log e o bot irá:
+*Formas de enviar logs:*
+1. Envie arquivo .log ou .txt (com autocorrect on)
+2. Cole o log no chat (detectado automaticamente)
+3. Cole o log e responda com /analyze
+
+O bot irá:
 1. Analisar os logs com DeepSeek
 2. Identificar problemas
 3. Enviar instruções de correção para o Jules
@@ -674,9 +680,15 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"📄 Recebendo arquivo: {file_name}...")
     
     try:
+        temp_dir = os.path.join(os.getcwd(), '.bot_temp')
+        os.makedirs(temp_dir, exist_ok=True)
+        
         file = await context.bot.get_file(document.file_id)
-        file_path = f"/tmp/{file_name}"
+        file_path = os.path.join(temp_dir, file_name)
         await file.download_to_drive(file_path)
+        
+        if not os.path.exists(file_path):
+            raise FileNotFoundError(f"Falha ao baixar o arquivo {file_name}")
         
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             log_content = f.read()
@@ -707,11 +719,24 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode='Markdown'
         )
         
-        os.remove(file_path)
+        if os.path.exists(file_path):
+            os.remove(file_path)
     
+    except FileNotFoundError as e:
+        logger.error(f"Erro ao baixar arquivo: {e}")
+        await update.message.reply_text(
+            f"❌ Erro ao baixar arquivo!\n\n"
+            f"O arquivo não pôde ser salvo. Tente:\n"
+            f"• Enviar um arquivo menor\n"
+            f"• Verificar permissões do bot\n"
+            f"• Copiar e colar o conteúdo do log como texto"
+        )
     except Exception as e:
         logger.error(f"Erro ao processar documento: {e}")
-        await update.message.reply_text(f"❌ Erro ao processar arquivo: {str(e)}")
+        await update.message.reply_text(
+            f"❌ Erro ao processar arquivo: {str(e)}\n\n"
+            f"Tente copiar e colar o conteúdo do log como texto."
+        )
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -725,7 +750,14 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = update.message.text
     
-    if len(text) > 200 and ('error' in text.lower() or 'exception' in text.lower() or 'traceback' in text.lower()):
+    log_indicators = ['error', 'exception', 'traceback', 'fatal', 'failed', 'crash', 
+                      'warning', 'stack trace', 'at ', 'caused by', 'null pointer',
+                      'logcat', 'androidruntime']
+    
+    text_lower = text.lower()
+    has_log_indicator = any(indicator in text_lower for indicator in log_indicators)
+    
+    if len(text) > 100 and has_log_indicator:
         await update.message.reply_text("📄 Detectei um possível log. Analisando...")
         
         try:
@@ -758,6 +790,73 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Erro ao processar texto: {e}")
             await update.message.reply_text(f"❌ Erro: {str(e)}")
+
+async def analyze_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_id not in user_states:
+        user_states[user_id] = {'auto_correction': False, 'current_session': None}
+    
+    current_session = user_states[user_id].get('current_session')
+    if not current_session:
+        await update.message.reply_text(
+            "⚠️ *Nenhuma sessão ativa!*\n\n"
+            "Use `/newsession` para criar uma sessão primeiro.",
+            parse_mode='Markdown'
+        )
+        return
+    
+    if not update.message.reply_to_message:
+        await update.message.reply_text(
+            "⚠️ *Uso incorreto!*\n\n"
+            "*Como usar:*\n"
+            "1. Cole o log no chat\n"
+            "2. Responda (reply) a mensagem com o log usando `/analyze`\n\n"
+            "*Ou simplesmente:*\n"
+            "- Ative `/autocorrect on` e envie o log diretamente",
+            parse_mode='Markdown'
+        )
+        return
+    
+    log_content = update.message.reply_to_message.text
+    
+    if not log_content or len(log_content) < 50:
+        await update.message.reply_text(
+            "⚠️ O texto está muito curto para ser analisado.\n"
+            "Certifique-se de responder a uma mensagem com log/erro."
+        )
+        return
+    
+    await update.message.reply_text("🤖 Analisando com DeepSeek...")
+    
+    try:
+        analysis = openrouter_api.analyze_logs(log_content)
+        
+        analysis_message = f"*🔍 Análise dos Logs:*\n\n{analysis}"
+        if len(analysis_message) > 4000:
+            chunks = [analysis_message[i:i+4000] for i in range(0, len(analysis_message), 4000)]
+            for chunk in chunks:
+                await update.message.reply_text(chunk, parse_mode='Markdown')
+        else:
+            await update.message.reply_text(analysis_message, parse_mode='Markdown')
+        
+        await update.message.reply_text(
+            f"📤 Enviando correções para Jules (sessão `{current_session}`)...",
+            parse_mode='Markdown'
+        )
+        
+        correction_prompt = f"Com base na análise dos logs, por favor corrija os seguintes problemas:\n\n{analysis}"
+        jules_api.send_message(current_session, correction_prompt)
+        
+        await update.message.reply_text(
+            "✅ *Instruções enviadas com sucesso!*\n\n"
+            f"Use `/activities {current_session}` para acompanhar o progresso.",
+            parse_mode='Markdown'
+        )
+    
+    except Exception as e:
+        logger.error(f"Erro ao analisar: {e}")
+        await update.message.reply_text(f"❌ Erro ao analisar: {str(e)}")
 
 async def test_connection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🔍 Testando conexão com Jules API...")
@@ -828,6 +927,7 @@ def main():
     application.add_handler(CommandHandler("approve", approve_plan_command))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("autocorrect", autocorrect_command))
+    application.add_handler(CommandHandler("analyze", analyze_command))
     
     application.add_handler(MessageHandler(filters.Document.ALL, handle_document))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
