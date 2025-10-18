@@ -11,6 +11,7 @@ Bot do Telegram que permite controlar o Jules do Google diretamente pelo Telegra
 
 - **📝 Sessões**
   - `/newsession <source> <prompt>` - Criar nova sessão de trabalho
+  - `/newpr <source> <prompt>` - Criar sessão com PR automático
   - `/sessions` - Listar todas as sessões ativas
   - `/status <session_id>` - Ver status detalhado de uma sessão
   - `/activities <session_id>` - Visualizar atividades de uma sessão
@@ -133,11 +134,19 @@ Isso mostrará todos os repositórios GitHub conectados ao seu Jules.
 
 ### 3. Criar uma Sessão
 
+Existem dois tipos de sessão:
+
+#### Sessão Normal
 ```
 /newsession sources/github/usuario/repo Implementar sistema de login
 ```
+Isso criará uma nova sessão de trabalho com o Jules. Você acompanha o progresso e decide quando criar o PR.
 
-Isso criará uma nova sessão de trabalho com o Jules.
+#### Sessão com PR Automático
+```
+/newpr sources/github/usuario/repo Implementar sistema de login
+```
+Quando a sessão for completada, o Jules automaticamente criará um Pull Request no GitHub! 🎯
 
 ### 4. Acompanhar Progresso
 
